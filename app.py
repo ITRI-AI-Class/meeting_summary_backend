@@ -1,82 +1,46 @@
-from flask import Flask, request, jsonify
+import argparse
+from dotenv import load_dotenv
+import firebase_admin
+from flask import Flask, render_template
 from flask_cors import CORS
 import os
-from libs.ai import transcribeAudio, getSummary
-import firebase_admin
-from firebase_admin import credentials, firestore
-import math
-import uuid
-from datetime import datetime, timezone
+from firebase_admin import credentials
 
-# 初始化 Firebase Admin SDK
-if not firebase_admin._apps:
-    cred = credentials.Certificate("./serviceAccount.json")
-    firebase_admin.initialize_app(cred)
+try:
+    # 设置命令行参数解析器
+    parser = argparse.ArgumentParser(description="Flask application")
+    parser.add_argument('--env', type=str, default='local', choices=['local', 'dev'],
+                        help="Set the environment to 'local' or 'dev'")
+    parser.add_argument('--port', type=int, default=5000, help="Set the port for the Flask server")
+    args = parser.parse_args()
 
-# 初始化firestore
-db = firestore.client()
+    # 根据当前环境来设置加载的 .env 文件
+    if args.env == 'local':
+        load_dotenv('.env.local')
+    else:
+        load_dotenv('.env.dev')
+except Exception as e:
+    # print("Error loading .env file")
+    # 使用預設的 .env 文件
+    load_dotenv('.env.dev')
 
-app = Flask(__name__)
-# CORS(app, resources={r"/*": {"origins": "*"}}) # This is the dangerous part.
-CORS(app, resources={r"/*": {"origins": "*"}})
+from controller.openvidu_controller import openvidu_blueprint
+from controller.api_controller import api_blueprint
 
-@app.route('/summarize', methods=['POST'])
-def process_audio():
-    # 檢查是否有上傳音訊檔案
-    if 'audio' not in request.files:
-        return jsonify({
-            "message": "fail",
-            "error": "No audio file found"
-        }), 400
+app = Flask(__name__,static_folder="templates/assets", template_folder="templates")
+CORS(app)
 
-    audio_file = request.files['audio']
-    uid = request.form.get('uid')
+# Register the blueprints with appropriate URL prefixes
+app.register_blueprint(api_blueprint, url_prefix='/api')
+app.register_blueprint(openvidu_blueprint, url_prefix='/api/openvidu')
 
-    print(uid)
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    # 儲存音訊檔案到一個臨時路徑
-    audio_path = os.path.join('temp_audio', audio_file.filename)
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-    audio_file.save(audio_path)
-
-    try:
-        # 使用 transcribeAudio 庫進行語音轉文字
-        transcription = transcribeAudio(audio_path)
-        # print(transcription)
-        mapped_segments = list(map(lambda segment: {"id": segment["id"], "startTime": math.floor(
-            segment["start"]), "endTime": math.floor(segment["end"]), "text": segment["text"]}, transcription.segments))
-
-        # 使用 getSummary 生成會議摘要
-        summary = getSummary(transcription.text)
-        summary_id = str(uuid.uuid4())
-        date = datetime.now(timezone.utc).isoformat()
-        # 構建返回的 JSON 格式
-        response = {
-            "message": "success",
-            "data": {
-                "id": summary_id,
-                "date": date,
-                "summary": summary,
-                "transcription": {
-                    "duration": transcription.duration,
-                    "segments": mapped_segments  # 傳遞時間段的轉錄內容
-                },
-                "thumbnailUrl": "https://images.unsplash.com/photo-1542744173-8e7e53415bb0?auto=format&fit=crop&q=80" # 可改為動態的 
-            }
-        }
-
-        doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
-        
-        doc_ref.set(response["data"])
-
-        return jsonify(response)
-
-    except Exception as e:
-        return jsonify({
-            "message": "fail",
-            "error": str(e)
-        }), 500
-
-
-if __name__ == '__main__':
-    app.run(debug=True,use_reloader=False)
+if __name__ == "__main__":
+    SERVER_PORT = os.environ.get("SERVER_PORT", 6080)
+    if args.env == 'local':
+        app.run(debug=True, port=SERVER_PORT)
+    else:
+        app.run(debug=False, host="0.0.0.0", port=SERVER_PORT, ssl_context=('cert.pem', 'key.pem'))
