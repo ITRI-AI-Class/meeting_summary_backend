@@ -67,3 +67,9 @@ node_modules/
 
 # dataconnect generated files
 .dataconnect
+/__pycache__
+/libs/__pycache__
+package-lock.json
+*.pyc
+.DS_Store
+.DS_Store
