@@ -17,7 +17,6 @@
                 "run",
                 "--no-debugger",
                 "--no-reload",
-                "local",
                 "--port",
                 "6080",
             ],

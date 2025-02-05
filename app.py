@@ -6,23 +6,30 @@ from flask_cors import CORS
 import os
 from firebase_admin import credentials
 
-try:
-    # 设置命令行参数解析器
-    parser = argparse.ArgumentParser(description="Flask application")
-    parser.add_argument('--env', type=str, default='local', choices=['local', 'dev'],
-                        help="Set the environment to 'local' or 'dev'")
-    parser.add_argument('--port', type=int, default=5000, help="Set the port for the Flask server")
-    args = parser.parse_args()
+# try:
+#     # 设置命令行参数解析器
+#     parser = argparse.ArgumentParser(description="Flask application")
+#     parser.add_argument('--env', type=str, default='local', choices=['local', 'dev'],
+#                         help="Set the environment to 'local' or 'dev'")
+#     parser.add_argument('--port', type=int, default=5000, help="Set the port for the Flask server")
+#     args = parser.parse_args()
 
-    # 根据当前环境来设置加载的 .env 文件
-    if args.env == 'local':
-        load_dotenv('.env.local')
-    else:
-        load_dotenv('.env.dev')
-except Exception as e:
-    # print("Error loading .env file")
-    # 使用預設的 .env 文件
-    load_dotenv('.env.dev')
+#     # 根据当前环境来设置加载的 .env 文件
+#     if args.env == 'local':
+#         load_dotenv('.env.local')
+#     else:
+#         load_dotenv('.env.dev')
+# except Exception as e:
+#     # print("Error loading .env file")
+#     # 使用預設的 .env 文件
+#     load_dotenv('.env.dev')
+
+load_dotenv('.env.local')
+
+# 初始化 Firebase Admin SDK
+if not firebase_admin._apps:
+    cred = credentials.Certificate("./serviceAccount.json")
+    firebase_admin.initialize_app(cred)
 
 from controller.openvidu_controller import openvidu_blueprint
 from controller.api_controller import api_blueprint
@@ -40,7 +47,8 @@ def index():
 
 if __name__ == "__main__":
     SERVER_PORT = os.environ.get("SERVER_PORT", 6080)
-    if args.env == 'local':
-        app.run(debug=True, port=SERVER_PORT)
-    else:
-        app.run(debug=False, host="0.0.0.0", port=SERVER_PORT, ssl_context=('cert.pem', 'key.pem'))
+    # if args.env == 'local':
+    #     app.run(debug=True, port=SERVER_PORT)
+    # else:
+    #     app.run(debug=False, host="0.0.0.0", port=SERVER_PORT, ssl_context=('cert.pem', 'key.pem'))
+    app.run(debug=True, port=SERVER_PORT, host="0.0.0.0")

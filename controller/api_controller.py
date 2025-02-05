@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 from io import BytesIO
 import math
 import os
+import cv2
 import firebase_admin
+import numpy as np
 from pydub import AudioSegment
 import random
 import string
@@ -21,11 +23,6 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 CHAT_MODEL = os.environ.get("CHAT_MODEL")
 AUDIO_MODEL = os.environ.get("AUDIO_MODEL")
 
-# 初始化 Firebase Admin SDK
-if not firebase_admin._apps:
-    cred = credentials.Certificate("./serviceAccount.json")
-    firebase_admin.initialize_app(cred)
-
 # 初始化firestore
 db = firestore.client()
 
@@ -40,6 +37,18 @@ def allowed_file(filename):
 def generate_random_code(length=12):
     characters = string.ascii_letters + string.digits  # 包含大小寫字母和數字
     return ''.join(random.choices(characters, k=length))
+
+from moviepy.video.io.VideoFileClip import VideoFileClip
+
+def extract_first_frame(video_path, output_image_path):
+    # 使用 MoviePy 讀取影片
+    try:
+        with VideoFileClip(video_path) as video:
+            # 提取第一幀並保存
+            video.save_frame(output_image_path, t=0.0)
+            print(f"縮圖已保存到 {output_image_path}")
+    except Exception as e:
+        print(f"發生錯誤: {e}")
 
 @api_blueprint.route('/summarize', methods=['POST'])
 def summarize():
@@ -71,7 +80,8 @@ def summarize():
             now = datetime.now()
             # 格式化為指定格式
             formatted_time = now.strftime("%Y-%m-%dT%H%M%S")
-            key = f"{RECORDINGS_PATH}{file_name}-{generate_random_code()}-{formatted_time}.{file_type}"
+            s3_file_name = f"{file_name}-{generate_random_code()}-{formatted_time}.{file_type}"
+            key = f"{RECORDINGS_PATH}{s3_file_name}"
             try:
                 s3.upload_object(key, file)
             except Exception as e:
@@ -80,59 +90,131 @@ def summarize():
             return jsonify({'errorMessage': 'File type not allowed'}), 400
         
     try:
-        # 使用 transcribeAudio 庫進行語音轉文字
-        # 假設 video_stream 已經從 S3 加載成功
-        video_stream = BytesIO()
-        s3.download_object(key, video_stream)
-        # if result is None:
-        #     return jsonify({'errorMessage': 'Error downloading file from S3'}), 500
-        video_stream.seek(0)
+        if(file_type == 'mp4'):
+            with NamedTemporaryFile(suffix=".mp4") as temp_video_file:
+                s3.download_object(key, temp_video_file)
+                temp_video_file_path = temp_video_file.name  # 獲取臨時文件路徑
+                
+                # 提取影片第一幀
+                video = cv2.VideoCapture(temp_video_file_path)
+                
+                # 設置到指定的幀數
+                video.set(cv2.CAP_PROP_POS_FRAMES, 24)
+                
+                success, frame = video.read()
+                
+                if success:
+                    thumbnail_name = f"{key.split('/')[-1].split('.')[0]}_thumbnail.jpg"
+                    temp_thumbnail_file_path = f"/tmp/{key.split('/')[-1].split('.')[0]}_thumbnail.jpg"
+                    cv2.imwrite(temp_thumbnail_file_path, frame)
+                    with open(temp_thumbnail_file_path, "rb") as image_file:
+                        s3.upload_object(f"{RECORDINGS_PATH}{thumbnail_name}",image_file)
+                        
+                    video.release()
+                
+                    # 使用 pydub 加載音頻流
+                    audio = AudioSegment.from_file(temp_video_file_path, format=file_type)
+                    
+                    # 將音頻保存為臨時文件
+                    with NamedTemporaryFile(suffix=".mp3") as temp_audio_file:
+                        audio.export(temp_audio_file.name, format="mp3")
+                        temp_audio_file_path = temp_audio_file.name  # 獲取臨時文件路徑
+                        print(temp_audio_file_path)
+                        with open(temp_audio_file_path, "rb") as audio_file:
+                            transcription = ai.transcribe_audio(audio_file)
+                            
+                    # print(transcription)
+                    mapped_segments = list(map(
+                        lambda segment: 
+                            {
+                                "id": segment["id"], 
+                                "startTime": math.floor(segment["start"]), 
+                                "endTime": math.floor(segment["end"]), 
+                                "text": segment["text"]
+                            }, 
+                        transcription.segments))
 
-        # 使用 pydub 加載音頻流
-        audio = AudioSegment.from_file(video_stream, format=file_type)
+                    # 使用 getSummary 生成會議摘要
+                    summary = ai.get_summary(transcription.text)
+                    summary_id = str(uuid.uuid4())
+                    date = datetime.now(timezone.utc).isoformat()
+                    # 構建返回的 JSON 格式
+                    response = {
+                        "summary": {
+                            "id": summary_id,
+                            "date": date,
+                            "summary": summary,
+                            "transcription": {
+                                "duration": transcription.duration,
+                                "segments": mapped_segments  # 傳遞時間段的轉錄內容
+                            },
+                            "srcUrl": f"{request.host_url}api/openvidu/recordings/{s3_file_name}",
+                            "thumbnailUrl":  f"{request.host_url}api/openvidu/recordings/thumbnails/{thumbnail_name}",
+                        }
+                    }
 
-        # 將音頻保存為臨時文件
-        with NamedTemporaryFile(suffix=".mp3") as temp_file:
-            audio.export(temp_file.name, format="mp3")
-            temp_file_path = temp_file.name  # 獲取臨時文件路徑
-            print(temp_file_path)
-            with open(temp_file_path, "rb") as file:
-                transcription = ai.transcribe_audio(file)
-        # print(transcription)
-        mapped_segments = list(map(
-            lambda segment: 
-                {
-                    "id": segment["id"], 
-                    "startTime": math.floor(segment["start"]), 
-                    "endTime": math.floor(segment["end"]), 
-                    "text": segment["text"]
-                }, 
-            transcription.segments))
+                    doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
+                    
+                    doc_ref.set(response["summary"])
 
-        # 使用 getSummary 生成會議摘要
-        summary = ai.get_summary(transcription.text)
-        summary_id = str(uuid.uuid4())
-        date = datetime.now(timezone.utc).isoformat()
-        # 構建返回的 JSON 格式
-        response = {
-            "summary": {
-                "id": summary_id,
-                "date": date,
-                "summary": summary,
-                "transcription": {
-                    "duration": transcription.duration,
-                    "segments": mapped_segments  # 傳遞時間段的轉錄內容
-                },
-                "thumbnailUrl": "https://images.unsplash.com/photo-1542744173-8e7e53415bb0?auto=format&fit=crop&q=80" # 可改為動態的 
-            }
-        }
+                    return jsonify(response)
+                else:
+                    video.release()
+                    return jsonify({"error": "Failed to extract frame from video"}), 500
+        else:
+            with NamedTemporaryFile(suffix=".mp3") as temp_audio_file:
+                s3.download_object(key, temp_audio_file)
+                with open(temp_audio_file.name, "rb") as audio_file:
+                    transcription = ai.transcribe_audio(audio_file)
+                # print(transcription)
+                mapped_segments = list(map(
+                    lambda segment: 
+                        {
+                            "id": segment["id"], 
+                            "startTime": math.floor(segment["start"]), 
+                            "endTime": math.floor(segment["end"]), 
+                            "text": segment["text"]
+                        }, 
+                    transcription.segments))
 
-        doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
+                # 使用 getSummary 生成會議摘要
+                summary = ai.get_summary(transcription.text)
+                summary_id = str(uuid.uuid4())
+                date = datetime.now(timezone.utc).isoformat()
+                # 構建返回的 JSON 格式
+                response = {
+                    "summary": {
+                        "id": summary_id,
+                        "date": date,
+                        "summary": summary,
+                        "transcription": {
+                            "duration": transcription.duration,
+                            "segments": mapped_segments  # 傳遞時間段的轉錄內容
+                        },
+                        "srcUrl": f"{request.host_url}api/openvidu/recordings/{s3_file_name}",
+                        "thumbnailUrl":  None,
+                    }
+                }
+
+                doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
+                
+                doc_ref.set(response["summary"])
+
+                return jsonify(response)
+
+    except Exception as e:
+        return jsonify({
+            "errorMessage": str(e)
+        }), 500
         
-        doc_ref.set(response["summary"])
-
-        return jsonify(response)
-
+@api_blueprint.route('/summary/<summary_id>', methods=['DELETE'])
+def deleteSummary(summary_id):
+    uid = request.headers.get('X-User-Id')
+    try:
+        doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
+            
+        doc_ref.delete()
+        return jsonify({"message": "success"}), 200
     except Exception as e:
         return jsonify({
             "errorMessage": str(e)
