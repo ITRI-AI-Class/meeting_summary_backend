@@ -238,6 +238,29 @@ def get_recording(recording_name):
         print("Error retrieving recording.", e)
         return jsonify({"errorMessage": "Unexpected error occurred"}), 500
 
+@openvidu_blueprint.route("/recordings/thumbnails/<thumbnail_name>", methods=["GET"])
+def get_recording_thumbnail(thumbnail_name):
+    key = RECORDINGS_PATH + thumbnail_name
+
+    try:
+        if not s3.exists(key):
+            return jsonify({"errorMessage": "Recording not found"}), 404
+
+        image_stream = s3.get_object(key)
+        
+        # 獲取圖片的 MIME 類型 (預設為 image/jpeg)
+        headers = {
+            "Content-Type": 'image/jpeg',
+        }
+        # 回傳檔案流作為 HTTP 回應
+        return Response(image_stream.read(), headers=headers)
+
+    except ClientError as e:
+        return jsonify({"errorMessage": "Error retrieving recording", "details": str(e)}), 500
+    except Exception as e:
+        print("Error retrieving recording.", e)
+        return jsonify({"errorMessage": "Unexpected error occurred"}), 500
+
 @openvidu_blueprint.route("/recordings/stream/<recording_name>", methods=["GET"])
 def get_recording_stream(recording_name):
     range_header = request.headers.get("Range")
