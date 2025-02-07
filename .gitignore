@@ -73,3 +73,4 @@ package-lock.json
 *.pyc
 .DS_Store
 .DS_Store
+/chroma_db

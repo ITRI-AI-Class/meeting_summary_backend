@@ -18,6 +18,44 @@ from libs.s3 import S3
 
 api_blueprint = Blueprint('api', __name__)
 
+# 網站功能上下文
+WEBSITE_CONTEXT = """
+你是一個專門協助用戶使用我們網站的客服機器人。你的名字是 Forgetful Buddy。
+請遵循以下規則：
+
+1. 始終使用繁體中文回答
+2. 保持友善且專業的態度
+3. 只回答與網站功能相關的問題
+4. 如果問題與網站功能無關，禮貌地引導用戶回到網站相關的主題
+5. 對於不確定的問題，建議用戶留下email，以便技術支援聯繫
+
+網站主要功能包括：
+1.幫使用者記錄會議錄音
+2.上傳會議錄音並生成文字記錄
+3.提供會議重點摘要
+
+如有技術問題，請建議用戶：
+1. 重新整理頁面
+2. 確認網路連線
+3. 如果問題持續，聯繫技術支援
+"""
+#歡迎語
+WELCOME_CONTEXT = """
+您好！我是 Forgetful Buddy，專門協助您使用我們網站的智能客服機器人，很高興為您服務！😊
+
+我們的網站可以幫助您：
+
+記錄並保存會議錄音。
+上傳錄音檔案並快速生成文字記錄。
+提供會議重點摘要，讓您輕鬆掌握內容！
+如果您在使用網站的過程中有任何問題，都可以隨時問我喔！如果遇到技術問題，也可以依循以下步驟嘗試解決：
+
+重新整理頁面
+確認網路連線
+或留下您的 email，我們的技術支援團隊會儘快與您聯繫。
+讓我們一起高效管理會議吧！請問我可以幫您什麼呢？ 😊
+"""
+
 RECORDINGS_PATH = os.environ.get("RECORDINGS_PATH", "recordings/")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 CHAT_MODEL = os.environ.get("CHAT_MODEL")
@@ -30,6 +68,8 @@ s3 = S3()
 
 allowed_file_types = {'mp3', 'mp4', 'm4a', 'wav', 'webm'}  # 許可的檔案擴展名
 
+ai = AI(api_key=GROQ_API_KEY, chat_model=CHAT_MODEL, audio_model=AUDIO_MODEL, temperature=0)
+
 # 檢查檔案擴展名是否有效
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_file_types
@@ -38,21 +78,8 @@ def generate_random_code(length=12):
     characters = string.ascii_letters + string.digits  # 包含大小寫字母和數字
     return ''.join(random.choices(characters, k=length))
 
-from moviepy.video.io.VideoFileClip import VideoFileClip
-
-def extract_first_frame(video_path, output_image_path):
-    # 使用 MoviePy 讀取影片
-    try:
-        with VideoFileClip(video_path) as video:
-            # 提取第一幀並保存
-            video.save_frame(output_image_path, t=0.0)
-            print(f"縮圖已保存到 {output_image_path}")
-    except Exception as e:
-        print(f"發生錯誤: {e}")
-
 @api_blueprint.route('/summarize', methods=['POST'])
 def summarize():
-    ai = AI(api_key=GROQ_API_KEY, chat_model=CHAT_MODEL, audio_model=AUDIO_MODEL, temperature=0)
     # 檢查是否有上傳音訊檔案
     if 'file' not in request.files and 's3_file_name' not in request.form:
         return jsonify({
@@ -208,13 +235,122 @@ def summarize():
         }), 500
         
 @api_blueprint.route('/summary/<summary_id>', methods=['DELETE'])
-def deleteSummary(summary_id):
+def delete_summary(summary_id):
     uid = request.headers.get('X-User-Id')
     try:
         doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
             
         doc_ref.delete()
         return jsonify({"message": "success"}), 200
+    except Exception as e:
+        return jsonify({
+            "errorMessage": str(e)
+        }), 500
+        
+     
+@api_blueprint.route('/chatbot/history', methods=['GET'])
+def get_chatbot_history():
+    uid = request.headers.get('X-User-Id')
+    try:
+        # 從Firestore獲取對話歷史
+        chat_ref = db.collection("user").document(uid).collection("chatbot").document("history")
+        chat_doc = chat_ref.get()
+
+        # 準備對話歷史
+        if chat_doc.exists:
+            chat_history = chat_doc.to_dict()
+        else:
+            chat_history = {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": WEBSITE_CONTEXT,
+                        "date": datetime.now(timezone.utc).isoformat()
+                    },
+                    {
+                        "role": "assistant",
+                        "content": WELCOME_CONTEXT,
+                        "date": datetime.now(timezone.utc).isoformat()
+                    }
+                ],
+                "lastUpdated": datetime.now(timezone.utc).isoformat()
+            }
+            
+        # 更新Firestore中的對話記錄
+        chat_ref.set(chat_history, merge=True)
+        
+        return jsonify(chat_history)
+
+    except Exception as e:
+        return jsonify({
+            "errorMessage": str(e)
+        }), 500
+        
+@api_blueprint.route('/chatbot/message', methods=['POST'])
+def get_chatbot_message():
+    try:
+        # 獲取請求數據
+        data = request.json
+        uid = data.get('uid')
+        message = data.get('message')
+
+        if not message:
+            return jsonify({
+                "errorMessage": "Message is required"
+            }), 400
+
+        # 從Firestore獲取對話歷史
+        chat_ref = db.collection("user").document(uid).collection("chatbot").document("history")
+        chat_doc = chat_ref.get()
+
+        # 準備對話歷史
+        if chat_doc.exists:
+            chat_history_messages = chat_doc.to_dict().get('messages', [])
+        else:
+            chat_history_messages = [
+                {
+                    "role": "system",
+                    "content": WEBSITE_CONTEXT,
+                    "date": datetime.now(timezone.utc).isoformat()
+                },
+                {
+                    "role": "assistant",
+                    "content": WELCOME_CONTEXT,
+                    "date": datetime.now(timezone.utc).isoformat()
+                }
+            ]
+
+        # 添加用戶新消息到歷史記錄
+        current_message = {
+            "role": "user",
+            "content": message,
+            "date": datetime.now(timezone.utc).isoformat()
+        }
+        chat_history_messages.append(current_message)
+
+        # 準備發送給ChatGroq的消息
+        messages = [{"role": chat["role"], "content": chat["content"]} for chat in chat_history_messages]
+
+        # 調用ChatGroq API
+        bot_response = ai.get_chatbot_message(messages)
+
+        # 將機器人的回應添加到歷史記錄
+        bot_message = {
+            "role": "assistant",
+            "content": bot_response,
+            "date": datetime.now(timezone.utc).isoformat()
+        }
+        chat_history_messages.append(bot_message)
+
+        # 更新Firestore中的對話記錄
+        chat_data = {
+            "messages": [chat for chat in chat_history_messages if chat["role"] != "system"],
+            "lastUpdated": datetime.now(timezone.utc).isoformat()
+        }
+        chat_ref.set(chat_data, merge=True)
+
+        return jsonify(chat_data)
+
     except Exception as e:
         return jsonify({
             "errorMessage": str(e)
