@@ -15,6 +15,7 @@ from flask import Blueprint, jsonify, request
 
 from libs.ai import AI
 from libs.s3 import S3
+from controller.linebot_controller import send_message_to_line
 
 api_blueprint = Blueprint('api', __name__)
 
@@ -85,6 +86,9 @@ def summarize():
             try:
                 s3.upload_object(key, file)
             except Exception as e:
+                error_message = f"Error uploading file: {str(e)}"
+                if uid:
+                    send_message_to_line(uid, f"檔案上傳失敗：{error_message}")
                 return jsonify({'errorMessage': f'Error uploading file: {str(e)}'}), 500
         else:
             return jsonify({'errorMessage': 'File type not allowed'}), 400
@@ -203,6 +207,9 @@ def summarize():
                 return jsonify(response)
 
     except Exception as e:
+        error_message = str(e)
+        if uid:
+            send_message_to_line(uid, f"檔案處理失敗：{error_message}")
         return jsonify({
             "errorMessage": str(e)
         }), 500

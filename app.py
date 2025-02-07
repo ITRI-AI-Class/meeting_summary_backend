@@ -33,6 +33,7 @@ if not firebase_admin._apps:
 
 from controller.openvidu_controller import openvidu_blueprint
 from controller.api_controller import api_blueprint
+from controller.linebot_controller import line_bot 
 
 app = Flask(__name__,static_folder="templates/assets", template_folder="templates")
 CORS(app)
@@ -40,6 +41,7 @@ CORS(app)
 # Register the blueprints with appropriate URL prefixes
 app.register_blueprint(api_blueprint, url_prefix='/api')
 app.register_blueprint(openvidu_blueprint, url_prefix='/api/openvidu')
+app.register_blueprint(line_bot, url_prefix='/api/linebot')  
 
 @app.route('/')
 def index():
