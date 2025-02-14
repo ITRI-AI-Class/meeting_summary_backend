@@ -48,41 +48,49 @@ class AI:
         )
         self.client = Groq(api_key=self.api_key)
         
-        # 指定 PDF 路徑
-        pdf_path = "rag_data.pdf"  # 替換為你的 PDF 文件路徑
+        # # 指定 PDF 路徑
+        # pdf_path = "rag_data.pdf"  # 替換為你的 PDF 文件路徑
 
-        # 加載 PDF 並創建向量數據庫
-        print("Loading PDF and creating vectorstore...")
-        documents = self.load_pdf_to_documents(pdf_path)
-        vectorstore = self.create_chroma_vectorstore(documents)
+        # # 加載 PDF 並創建向量數據庫
+        # print("Loading PDF and creating vectorstore...")
+        # documents = self.load_pdf_to_documents(pdf_path)
+        # vectorstore = self.create_chroma_vectorstore(documents)
 
-        # 創建檢索增強生成 (RAG) 的 QA 應用
-        print("Creating RetrievalQA...")
-        self.qa_chain = self.create_retrieval_qa(vectorstore)
+        # # 創建檢索增強生成 (RAG) 的 QA 應用
+        # print("Creating RetrievalQA...")
+        # self.qa_chain = self.create_retrieval_qa(vectorstore)
     
     def get_summary(self, text: str) -> dict:
         prompt = """
-        角色:
-        您是一個文字處理專家,具備具備高度的細心和耐心,強大的語言能力和豐富的文字處理經驗。校
-        對人員必須具備良好的溝通技巧,以便與不同部門協調合作,確保最終出版物的質量和專業性。
-        
-        任務:
-        幫我做會議標籤、會議討論的氣氛、會議標題、會議摘要
-        請以以下json格式輸出
+        角色：
+        您是一位專業的文字處理專家，具備細心、耐心、強大的語言能力和豐富的文字處理經驗，並能與不同部門協調合作，確保內容質量與專業性。
+
+        任務：
+        請協助總結會議內容，生成會議標籤、會議討論氣氛、會議標題與會議摘要，並以以下格式輸出：
         {
-            "tags":[],
-            "atmosphere":[],
-            "title":"",
-            "content":""
+            "tags": [],
+            "atmosphere": [],
+            "title": "",
+            "content": ""
         }
 
-        規則:
-        - 閱讀逐字稿時,一個字都不要漏。
-        - 中文用字盡量淺顯、白話。
-        - 對每個段落提取關鍵訊息,如關鍵討論點、決策、行動項和意見。
-        - 將提取的關鍵訊息進行整理,確保邏輯順序和連貫性。
-        - 將總結的段落或列表進行潤飾,確保語言流暢且易於理解。
-        - 摘要部分要詳細說明，輸出json即可，其他說明文字不用，要確認是json格式，不要出現不符合規則的字元
+        規則：
+        1. 必須逐字閱讀逐字稿，確保沒有遺漏任何關鍵訊息。
+        2. 中文用字需淺顯易懂，避免使用晦澀語言。
+        3. 提取以下內容：
+        - 關鍵討論點
+        - 決策內容
+        - 行動項目
+        - 重要意見
+        4. 整理後需確保邏輯清晰、結構連貫。
+        5. **摘要需根據輸入內容長度生成相對應的字數：**
+        - 100 字的內容，生成 50 字的摘要。
+        - 200 字的內容，生成 100 字的摘要。
+        - 以此類推，摘要長度需符合內容比例，並涵蓋核心重點。
+        6. 摘要需完整且詳細，語言流暢、易於理解。
+        7. 僅返回符合 JSON 格式的內容，確保輸出結果無其他額外文字。
+
+        請直接回覆符合上述規範的 JSON 格式。
         """
         
         messages = [
@@ -91,6 +99,7 @@ class AI:
         ]
         output = self.llm.invoke(messages)
         # output = self.qa_chain({"query":messages})
+        print(output.content)
         return json.loads(output.content)
 
     def transcribe_audio(self, file: BufferedReader) -> dict:
