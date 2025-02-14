@@ -24,8 +24,8 @@ from firebase_admin import credentials
 #     # 使用預設的 .env 文件
 #     load_dotenv('.env.dev')
 
-# load_dotenv('.env.local')
-load_dotenv('.env.dev')
+load_dotenv('.env.local')
+# load_dotenv('.env.dev')
 
 # 初始化 Firebase Admin SDK
 if not firebase_admin._apps:
