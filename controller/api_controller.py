@@ -13,6 +13,7 @@ import uuid
 from firebase_admin import firestore, credentials
 from flask import Blueprint, jsonify, request
 
+from controller.line_controller import send_message_to_line
 from libs.ai import AI
 from libs.s3 import S3
 
@@ -38,8 +39,11 @@ WEBSITE_CONTEXT = """
 1. 重新整理頁面
 2. 確認網路連線
 3. 如果問題持續，聯繫技術支援
+
+如果有跟以上問題不相干的，絕對不可以回答!!!
+並且禮貌地引導用戶回到網站相關的主題。
 """
-#歡迎語
+# 歡迎語
 WELCOME_CONTEXT = """
 您好！我是 Forgetful Buddy，專門協助您使用我們網站的智能客服機器人，很高興為您服務！😊
 
@@ -68,15 +72,20 @@ s3 = S3()
 
 allowed_file_types = {'mp3', 'mp4', 'm4a', 'wav', 'webm'}  # 許可的檔案擴展名
 
-ai = AI(api_key=GROQ_API_KEY, chat_model=CHAT_MODEL, audio_model=AUDIO_MODEL, temperature=0)
+ai = AI(api_key=GROQ_API_KEY, chat_model=CHAT_MODEL,
+        audio_model=AUDIO_MODEL, temperature=0)
 
 # 檢查檔案擴展名是否有效
+
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_file_types
+
 
 def generate_random_code(length=12):
     characters = string.ascii_letters + string.digits  # 包含大小寫字母和數字
     return ''.join(random.choices(characters, k=length))
+
 
 @api_blueprint.route('/summarize', methods=['POST'])
 def summarize():
@@ -90,7 +99,7 @@ def summarize():
     key = ''
     file_name = ''
     file_type = ''
-
+    summary_id = request.form.get('summary_id', str(uuid.uuid4()))
     s3_file_name = request.form.get('s3_file_name')
     if s3_file_name and allowed_file(s3_file_name):
         file_name = s3_file_name.split('.')[0]
@@ -112,36 +121,47 @@ def summarize():
             try:
                 s3.upload_object(key, file)
             except Exception as e:
+                error_message = f"Error uploading file: {str(e)}"
+                if uid:
+                    send_message_to_line(uid, f"檔案上傳失敗：{error_message}")
                 return jsonify({'errorMessage': f'Error uploading file: {str(e)}'}), 500
         else:
+            error_message = str(e)
+            if uid:
+                send_message_to_line(uid, f"檔案處理失敗：{error_message}")
             return jsonify({'errorMessage': 'File type not allowed'}), 400
-        
+
     try:
-        if(file_type == 'mp4'):
+        user_profile_ref = db.collection("user").document(uid)
+        user_profile = user_profile_ref.get().to_dict()
+        line_id = user_profile["preferences"]["lineNotification"]["uid"]
+        if (file_type == 'mp4'):
             with NamedTemporaryFile(suffix=".mp4") as temp_video_file:
                 s3.download_object(key, temp_video_file)
                 temp_video_file_path = temp_video_file.name  # 獲取臨時文件路徑
-                
+
                 # 提取影片第一幀
                 video = cv2.VideoCapture(temp_video_file_path)
-                
+
                 # 設置到指定的幀數
                 video.set(cv2.CAP_PROP_POS_FRAMES, 24)
-                
+
                 success, frame = video.read()
-                
+
                 if success:
                     thumbnail_name = f"{key.split('/')[-1].split('.')[0]}_thumbnail.jpg"
                     temp_thumbnail_file_path = f"/tmp/{key.split('/')[-1].split('.')[0]}_thumbnail.jpg"
                     cv2.imwrite(temp_thumbnail_file_path, frame)
                     with open(temp_thumbnail_file_path, "rb") as image_file:
-                        s3.upload_object(f"{RECORDINGS_PATH}{thumbnail_name}",image_file)
-                        
+                        s3.upload_object(
+                            f"{RECORDINGS_PATH}{thumbnail_name}", image_file)
+
                     video.release()
-                
+
                     # 使用 pydub 加載音頻流
-                    audio = AudioSegment.from_file(temp_video_file_path, format=file_type)
-                    
+                    audio = AudioSegment.from_file(
+                        temp_video_file_path, format=file_type)
+
                     # 將音頻保存為臨時文件
                     with NamedTemporaryFile(suffix=".mp3") as temp_audio_file:
                         audio.export(temp_audio_file.name, format="mp3")
@@ -149,21 +169,20 @@ def summarize():
                         print(temp_audio_file_path)
                         with open(temp_audio_file_path, "rb") as audio_file:
                             transcription = ai.transcribe_audio(audio_file)
-                            
+
                     # print(transcription)
                     mapped_segments = list(map(
-                        lambda segment: 
+                        lambda segment:
                             {
-                                "id": segment["id"], 
-                                "startTime": math.floor(segment["start"]), 
-                                "endTime": math.floor(segment["end"]), 
+                                "id": segment["id"],
+                                "startTime": math.floor(segment["start"]),
+                                "endTime": math.floor(segment["end"]),
                                 "text": segment["text"]
-                            }, 
+                            },
                         transcription.segments))
 
                     # 使用 getSummary 生成會議摘要
                     summary = ai.get_summary(transcription.text)
-                    summary_id = str(uuid.uuid4())
                     date = datetime.now(timezone.utc).isoformat()
                     # 構建返回的 JSON 格式
                     response = {
@@ -180,10 +199,13 @@ def summarize():
                         }
                     }
 
-                    doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
-                    
+                    doc_ref = db.collection("user").document(
+                        uid).collection("summaries").document(summary_id)
+
                     doc_ref.set(response["summary"])
 
+                    if line_id:
+                        send_message_to_line(line_id, response["summary"])
                     return jsonify(response)
                 else:
                     video.release()
@@ -195,13 +217,13 @@ def summarize():
                     transcription = ai.transcribe_audio(audio_file)
                 # print(transcription)
                 mapped_segments = list(map(
-                    lambda segment: 
+                    lambda segment:
                         {
-                            "id": segment["id"], 
-                            "startTime": math.floor(segment["start"]), 
-                            "endTime": math.floor(segment["end"]), 
+                            "id": segment["id"],
+                            "startTime": math.floor(segment["start"]),
+                            "endTime": math.floor(segment["end"]),
                             "text": segment["text"]
-                        }, 
+                        },
                     transcription.segments))
 
                 # 使用 getSummary 生成會議摘要
@@ -223,37 +245,43 @@ def summarize():
                     }
                 }
 
-                doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
-                
+                doc_ref = db.collection("user").document(
+                    uid).collection("summaries").document(summary_id)
+
                 doc_ref.set(response["summary"])
 
+                if line_id:
+                    send_message_to_line(line_id, response["summary"])
                 return jsonify(response)
 
     except Exception as e:
         return jsonify({
             "errorMessage": str(e)
         }), 500
-        
+
+
 @api_blueprint.route('/summary/<summary_id>', methods=['DELETE'])
 def delete_summary(summary_id):
     uid = request.headers.get('X-User-Id')
     try:
-        doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
-            
+        doc_ref = db.collection("user").document(
+            uid).collection("summaries").document(summary_id)
+
         doc_ref.delete()
         return jsonify({"message": "success"}), 200
     except Exception as e:
         return jsonify({
             "errorMessage": str(e)
         }), 500
-        
-     
+
+
 @api_blueprint.route('/chatbot/history', methods=['GET'])
 def get_chatbot_history():
     uid = request.headers.get('X-User-Id')
     try:
         # 從Firestore獲取對話歷史
-        chat_ref = db.collection("user").document(uid).collection("chatbot").document("history")
+        chat_ref = db.collection("user").document(
+            uid).collection("chatbot").document("history")
         chat_doc = chat_ref.get()
 
         # 準備對話歷史
@@ -275,17 +303,18 @@ def get_chatbot_history():
                 ],
                 "lastUpdated": datetime.now(timezone.utc).isoformat()
             }
-            
+
         # 更新Firestore中的對話記錄
         chat_ref.set(chat_history, merge=True)
-        
+
         return jsonify(chat_history)
 
     except Exception as e:
         return jsonify({
             "errorMessage": str(e)
         }), 500
-        
+
+
 @api_blueprint.route('/chatbot/message', methods=['POST'])
 def get_chatbot_message():
     try:
@@ -300,7 +329,8 @@ def get_chatbot_message():
             }), 400
 
         # 從Firestore獲取對話歷史
-        chat_ref = db.collection("user").document(uid).collection("chatbot").document("history")
+        chat_ref = db.collection("user").document(
+            uid).collection("chatbot").document("history")
         chat_doc = chat_ref.get()
 
         # 準備對話歷史
@@ -329,7 +359,13 @@ def get_chatbot_message():
         chat_history_messages.append(current_message)
 
         # 準備發送給ChatGroq的消息
-        messages = [{"role": chat["role"], "content": chat["content"]} for chat in chat_history_messages]
+        messages = [{"role": chat["role"], "content": chat["content"]}
+                    for chat in chat_history_messages]
+
+        messages = [{
+            "role": "system",
+            "content": WEBSITE_CONTEXT,
+        }] + messages
 
         # 調用ChatGroq API
         bot_response = ai.get_chatbot_message(messages)
