@@ -58,7 +58,7 @@ with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
 
 # 發送 LINE 訊息的函式
-
+NGROK_URL = "https://mainly-deep-sole.ngrok-free.app"  # 更新為 ngrok 產生的 HTTPS URL
 
 def send_message_to_line(user_id, meeting_data):
     headers = {
@@ -70,6 +70,16 @@ def send_message_to_line(user_id, meeting_data):
     srcUrl = meeting_data["srcUrl"]
     summary_title = meeting_data["summary"]["title"]
     summary_content = meeting_data["summary"]["content"]
+
+    # ✅ 替換 srcUrl 的本機網址，改用 ngrok 的公開 HTTPS 網址
+    if srcUrl.startswith("http://127.0.0.1:6080"):
+        srcUrl = srcUrl.replace("http://127.0.0.1:6080", NGROK_URL)
+        print(f"✅ Updated srcUrl: {srcUrl}")  # 確保 URL 是 HTTPS
+
+    if thumbnailUrl.startswith("http://127.0.0.1:6080"):    
+        thumbnailUrl = thumbnailUrl.replace("http://127.0.0.1:6080", NGROK_URL)
+        print(f"✅ Updated thumbnailUrl: {thumbnailUrl}")
+
     messages = []
     messages.append(
         {
@@ -114,6 +124,7 @@ def send_message_to_line(user_id, meeting_data):
 
     # 🔍 記錄 API 回應
     print(f"🔍 LINE API Response: {response.status_code} | {response.text}")
+    print(f"🔍 Checking srcUrl: {srcUrl}")
 
 
 @line_blueprint.route('/login', methods=['GET'])
@@ -189,8 +200,9 @@ def message_callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     mtext = event.message.text
-    print(mtext)
-    if mtext == '會議清單':
+    print(f"🔹 收到使用者訊息: {mtext}")  # 確認有收到訊息
+    if mtext == "會議清單":
+        print("✅ 執行 send_meeting_list 函式")  # 確認 `send_meeting_list` 有執行
         send_meeting_list(event)
 
 
@@ -209,6 +221,9 @@ def send_meeting_list(event):
     # 查詢 preferences.lineNotification.uid 等於 target_uid 的文件
     collection_ref = db.collection('your_collection_name')  # 替換為你的集合名稱
     query = collection_ref.where('preferences.lineNotification.uid', '==', )
+    # target_uid = "Ub6ae7408691d234a6e8a6cae4d0bac01"
+    # print(f"🔹 取得使用者 LINE UID: {target_uid}")
+    # query = collection_ref.where('preferences.lineNotification.uid', '==', target_uid)
 
     # 查詢並輸出結果
     results = query.stream()
@@ -217,7 +232,7 @@ def send_meeting_list(event):
         print(f'Document ID: {doc.id}')
         print(f'Document Data: {doc.to_dict()}')
     meetingsRef = db.collection("user").document(
-        "8zAech6MQUenjt6gSnNz8yhTk312").collection("summaries")
+        target_uid).collection("summaries")
     meetings = meetingsRef.get()
 
     carouselColumns = []

@@ -74,3 +74,4 @@ package-lock.json
 .DS_Store
 .DS_Store
 /chroma_db
+serviceAccount.json
