@@ -122,19 +122,16 @@ def summarize():
                 s3.upload_object(key, file)
             except Exception as e:
                 error_message = f"Error uploading file: {str(e)}"
-                if uid:
-                    send_message_to_line(uid, f"檔案上傳失敗：{error_message}")
                 return jsonify({'errorMessage': f'Error uploading file: {str(e)}'}), 500
         else:
             error_message = str(e)
-            if uid:
-                send_message_to_line(uid, f"檔案處理失敗：{error_message}")
             return jsonify({'errorMessage': 'File type not allowed'}), 400
 
     try:
         user_profile_ref = db.collection("user").document(uid)
         user_profile = user_profile_ref.get().to_dict()
         line_id = user_profile["preferences"]["lineNotification"]["uid"]
+        line_notification_enabled = user_profile["preferences"]["lineNotification"]["enabled"]
         if (file_type == 'mp4'):
             with NamedTemporaryFile(suffix=".mp4") as temp_video_file:
                 s3.download_object(key, temp_video_file)
@@ -204,7 +201,7 @@ def summarize():
 
                     doc_ref.set(response["summary"])
 
-                    if line_id:
+                    if line_id and line_notification_enabled:
                         send_message_to_line(line_id, response["summary"])
                     return jsonify(response)
                 else:
@@ -250,7 +247,7 @@ def summarize():
 
                 doc_ref.set(response["summary"])
 
-                if line_id:
+                if line_id and line_notification_enabled:
                     send_message_to_line(line_id, response["summary"])
                 return jsonify(response)
 
@@ -290,11 +287,6 @@ def get_chatbot_history():
         else:
             chat_history = {
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": WEBSITE_CONTEXT,
-                        "date": datetime.now(timezone.utc).isoformat()
-                    },
                     {
                         "role": "assistant",
                         "content": WELCOME_CONTEXT,
@@ -339,11 +331,6 @@ def get_chatbot_message():
         else:
             chat_history_messages = [
                 {
-                    "role": "system",
-                    "content": WEBSITE_CONTEXT,
-                    "date": datetime.now(timezone.utc).isoformat()
-                },
-                {
                     "role": "assistant",
                     "content": WELCOME_CONTEXT,
                     "date": datetime.now(timezone.utc).isoformat()
@@ -368,7 +355,7 @@ def get_chatbot_message():
         }] + messages
 
         # 調用ChatGroq API
-        bot_response = ai.get_chatbot_message(messages)
+        bot_response = ai.get_chatbot_message(str(messages))
 
         # 將機器人的回應添加到歷史記錄
         bot_message = {
