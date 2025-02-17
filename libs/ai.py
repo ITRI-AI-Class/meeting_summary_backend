@@ -20,12 +20,14 @@ class AI:
         return documents
 
     # 步驟 2: 將文檔存儲到 Chroma 向量數據庫
-    def create_chroma_vectorstore(self, documents):
+    def create_chroma_vectorstore(self, documents=None):
         model_name = "sentence-transformers/all-MiniLM-L6-v2"
         model_kwargs = {'device': 'cpu'}
         embeddings = HuggingFaceEmbeddings(model_name=model_name,
                                         model_kwargs=model_kwargs)
-        vectorstore = Chroma.from_documents(documents, embeddings, persist_directory="chroma_db")
+        # vectorstore = Chroma.from_documents(documents, embeddings, persist_directory="chroma_db")
+        # 從已儲存的 chroma_db 加載
+        vectorstore = Chroma(persist_directory="chroma_db", embedding_function=embeddings)
         vectorstore.persist()  # 持久化存儲
         return vectorstore
 
@@ -48,17 +50,17 @@ class AI:
         )
         self.client = Groq(api_key=self.api_key)
         
-        # # 指定 PDF 路徑
+        # 指定 PDF 路徑
         # pdf_path = "rag_data.pdf"  # 替換為你的 PDF 文件路徑
 
-        # # 加載 PDF 並創建向量數據庫
+        # 加載 PDF 並創建向量數據庫
         # print("Loading PDF and creating vectorstore...")
         # documents = self.load_pdf_to_documents(pdf_path)
         # vectorstore = self.create_chroma_vectorstore(documents)
-
-        # # 創建檢索增強生成 (RAG) 的 QA 應用
-        # print("Creating RetrievalQA...")
-        # self.qa_chain = self.create_retrieval_qa(vectorstore)
+        vectorstore = self.create_chroma_vectorstore() 
+        # 創建檢索增強生成 (RAG) 的 QA 應用
+        print("Creating RetrievalQA...")
+        self.qa_chain = self.create_retrieval_qa(vectorstore)
     
     def get_summary(self, text: str) -> dict:
         prompt = """
@@ -112,8 +114,8 @@ class AI:
         )
         return transcription
     
-    def get_chatbot_message(self, message: list) -> dict:
-        output = self.llm.invoke(message)
-        # output = self.qa_chain.invoke(message)
+    def get_chatbot_message(self, message: str) -> dict:
+        # output = self.llm.invoke(message)
+        output = self.qa_chain.invoke(message)
         # print(output)
-        return output.content
+        return output['result']

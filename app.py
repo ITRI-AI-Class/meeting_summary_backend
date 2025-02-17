@@ -1,10 +1,11 @@
 import argparse
 from dotenv import load_dotenv
 import firebase_admin
-from flask import Flask, render_template, send_from_directory
+from flask import Flask, render_template, request, send_from_directory, redirect
 from flask_cors import CORS
 import os
 from firebase_admin import credentials
+import socket
 
 # try:
 #     # 设置命令行参数解析器
@@ -44,11 +45,16 @@ app.register_blueprint(api_blueprint, url_prefix='/api')
 app.register_blueprint(openvidu_blueprint, url_prefix='/api/openvidu')
 app.register_blueprint(line_blueprint, url_prefix='/api/line')  
 
+@app.before_request
+def before_request():
+    if "/api/" in request.path and not request.path.startswith("/api/"):
+        corrected_path = "/api/" + request.path.split("/api/")[1]  # 取出正確的 API 路徑
+        return redirect(corrected_path, code=307)  # 307 會保留原 HTTP 方法
+
 # 處理前端路由
 @app.route('/<path:path>')
 def frontend_routes(path):
     try:
-        # 嘗試回傳靜態文件（如果存在的話）
         return send_from_directory(app.static_folder, path)
     except:
         # 如果文件不存在，回傳 index.html，交由前端處理
@@ -56,8 +62,7 @@ def frontend_routes(path):
 
 # 單一入口路由
 @app.route('/')
-@app.route('/<path:path>')
-def index(path=''):
+def index():
     return render_template('index.html')
 
 if __name__ == "__main__":
