@@ -126,6 +126,7 @@ def login():
         f"&client_id={LINE_LOGIN_CHANNEL_ID}"
         f"&redirect_uri={LINE_LOGIN_REDIRECT_URI}"
         f"&state={uid}"
+        f"&bot_prompt=aggressive"
         f"&scope=profile%20openid%20email"
     )
     return authorization_url

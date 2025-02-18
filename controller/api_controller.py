@@ -3,7 +3,9 @@ from io import BytesIO
 import math
 import os
 import cv2
+from docx import Document
 import firebase_admin
+from fpdf import FPDF
 import numpy as np
 from pydub import AudioSegment
 import random
@@ -11,7 +13,7 @@ import string
 from tempfile import NamedTemporaryFile
 import uuid
 from firebase_admin import firestore, credentials
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request, send_file
 
 from controller.line_controller import send_message_to_line
 from libs.ai import AI
@@ -122,7 +124,8 @@ def summarize():
                 s3.upload_object(key, file)
             except Exception as e:
                 error_message = f"Error uploading file: {str(e)}"
-                return jsonify({'errorMessage': f'Error uploading file: {str(e)}'}), 500
+                print(error_message)
+                return jsonify({'errorMessage': f'Error uploading file: {str(error_message)}'}), 500
         else:
             error_message = str(e)
             return jsonify({'errorMessage': 'File type not allowed'}), 400
@@ -130,8 +133,9 @@ def summarize():
     try:
         user_profile_ref = db.collection("user").document(uid)
         user_profile = user_profile_ref.get().to_dict()
-        line_id = user_profile["preferences"]["lineNotification"]["uid"]
-        line_notification_enabled = user_profile["preferences"]["lineNotification"]["enabled"]
+        line_notification = user_profile.get("preferences", {}).get("lineNotification", {})
+        line_id = line_notification.get("uid") if line_notification else None
+        line_notification_enabled = line_notification.get("enabled") if line_notification else None
         if (file_type == 'mp4'):
             with NamedTemporaryFile(suffix=".mp4") as temp_video_file:
                 s3.download_object(key, temp_video_file)
@@ -270,7 +274,6 @@ def delete_summary(summary_id):
         return jsonify({
             "errorMessage": str(e)
         }), 500
-
 
 @api_blueprint.route('/chatbot/history', methods=['GET'])
 def get_chatbot_history():

@@ -140,7 +140,7 @@ def list_recordings():
     room_id = request.args.get("roomId")
 
     try:
-        key_start = f"{RECORDINGS_PATH}{room_name}-{room_id if room_id else ""}" if room_name else RECORDINGS_PATH
+        key_start = f"{RECORDINGS_PATH}{room_name}-{room_id if room_id else ''}" if room_name else RECORDINGS_PATH
         key_end = ".mp4.json"
         regex = re.compile(f"^{key_start}.*{key_end}$")
 
