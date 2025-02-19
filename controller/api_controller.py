@@ -2,10 +2,10 @@ from datetime import datetime, timezone
 from io import BytesIO
 import math
 import os
+from urllib.parse import quote
+import zipfile
 import cv2
 from docx import Document
-import firebase_admin
-from fpdf import FPDF
 import numpy as np
 from pydub import AudioSegment
 import random
@@ -13,7 +13,8 @@ import string
 from tempfile import NamedTemporaryFile
 import uuid
 from firebase_admin import firestore, credentials
-from flask import Blueprint, Response, jsonify, request, send_file
+from flask import Blueprint, Response, jsonify, make_response, request, send_file
+import requests
 
 from controller.line_controller import send_message_to_line
 from libs.ai import AI
@@ -75,7 +76,7 @@ s3 = S3()
 allowed_file_types = {'mp3', 'mp4', 'm4a', 'wav', 'webm'}  # 許可的檔案擴展名
 
 ai = AI(api_key=GROQ_API_KEY, chat_model=CHAT_MODEL,
-        audio_model=AUDIO_MODEL, temperature=0)
+        audio_model=AUDIO_MODEL, temperature=0.2)
 
 # 檢查檔案擴展名是否有效
 
@@ -229,7 +230,6 @@ def summarize():
 
                 # 使用 getSummary 生成會議摘要
                 summary = ai.get_summary(transcription.text)
-                summary_id = str(uuid.uuid4())
                 date = datetime.now(timezone.utc).isoformat()
                 # 構建返回的 JSON 格式
                 response = {
@@ -242,7 +242,7 @@ def summarize():
                             "segments": mapped_segments  # 傳遞時間段的轉錄內容
                         },
                         "srcUrl": f"{request.host_url}api/openvidu/recordings/{s3_file_name}",
-                        "thumbnailUrl":  None,
+                        "thumbnailUrl":  f"{request.host_url}api/openvidu/recordings/default.png",
                     }
                 }
 
@@ -274,6 +274,58 @@ def delete_summary(summary_id):
         return jsonify({
             "errorMessage": str(e)
         }), 500
+
+@api_blueprint.route('/summary/<summary_id>/download', methods=['GET'])
+def download(summary_id):
+    uid = request.headers.get('X-User-Id')
+
+    # 讀取 Firestore 會議摘要
+    doc_ref = db.collection("user").document(uid).collection("summaries").document(summary_id)
+    summary_json = doc_ref.get().to_dict()
+    summary = summary_json.get("summary", {})
+    title = summary.get("title", "會議標題")
+    content = summary.get("content", "")
+
+    # 建立 Word 檔案
+    with NamedTemporaryFile(suffix=".docx", delete=False) as temp_doc:
+        doc = Document()
+        doc.add_heading(title, level=0)
+        doc.add_heading('會議摘要', level=1)
+        doc.add_paragraph(content)
+        doc.save(temp_doc.name)
+        word_file_path = temp_doc.name  # Word 檔案的路徑
+
+    # 取得 S3 影片檔案
+    srcUrl = summary_json.get("srcUrl", "")  # S3 影片 URL
+    video_file_path = None
+
+    if srcUrl:
+        s3_file_name = srcUrl.split('/')[-1]
+        s3_file_path = f"{RECORDINGS_PATH}{s3_file_name}"
+        file_type = s3_file_name.split('.')[-1]
+        with NamedTemporaryFile(suffix=f".{file_type}", delete=False) as temp_video_file:
+            s3.download_object(s3_file_path, temp_video_file)
+            video_file_path = temp_video_file.name
+
+    # 建立 ZIP 檔案
+    with NamedTemporaryFile(suffix=".zip", delete=False) as temp_zip:
+        zip_file_path = temp_zip.name
+        with zipfile.ZipFile(zip_file_path, 'w') as zipf:
+            zipf.write(word_file_path, f"{title}.docx")  # 加入 Word 檔案
+            if video_file_path:
+                zipf.write(video_file_path, f"{title}.{file_type}")  # 加入影片
+
+    # 清理暫存檔案
+    os.remove(word_file_path)
+    if video_file_path:
+        os.remove(video_file_path)
+
+    utf_filename=quote(f"{title}.zip")
+    response = send_file(zip_file_path, as_attachment=True)
+    # response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{utf_filename}"
+    response.headers['Content-Disposition'] += f"; filename*=utf-8''{utf_filename}"
+    response.headers['Access-Control-Expose-Headers'] = 'Content-Disposition'
+    return response
 
 @api_blueprint.route('/chatbot/history', methods=['GET'])
 def get_chatbot_history():
