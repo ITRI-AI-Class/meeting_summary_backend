@@ -2,10 +2,21 @@ from datetime import datetime, timezone
 from io import BytesIO
 import math
 import os
+# 設定 TEMP 和 TMP 環境變數
+os.environ["TEMP"] = r"C:\Temp"
+os.environ["TMP"] = r"C:\Temp"
+
+import tempfile  # 必須在環境變數設定後載入 tempfile
+# 確保 tempfile 使用新路徑
+print("tempfile.gettempdir():", tempfile.gettempdir())
+
 import cv2
 import firebase_admin
 import numpy as np
 from pydub import AudioSegment
+from pydub.utils import which
+AudioSegment.converter = which("ffmpeg")
+
 import random
 import string
 from tempfile import NamedTemporaryFile
@@ -16,6 +27,9 @@ from flask import Blueprint, jsonify, request
 from controller.line_controller import send_message_to_line
 from libs.ai import AI
 from libs.s3 import S3
+
+import logging
+import traceback
 
 api_blueprint = Blueprint('api', __name__)
 
@@ -89,84 +103,141 @@ def generate_random_code(length=12):
 
 @api_blueprint.route('/summarize', methods=['POST'])
 def summarize():
-    # 檢查是否有上傳音訊檔案
-    if 'file' not in request.files and 's3_file_name' not in request.form:
-        return jsonify({
-            "errorMessage": "No file found",
-        }), 400
-
-    uid = request.form.get('uid')
-    key = ''
-    file_name = ''
-    file_type = ''
-    summary_id = request.form.get('summary_id', str(uuid.uuid4()))
-    s3_file_name = request.form.get('s3_file_name')
-    if s3_file_name and allowed_file(s3_file_name):
-        file_name = s3_file_name.split('.')[0]
-        file_type = s3_file_name.split('.')[1]
-        key = RECORDINGS_PATH + s3_file_name
-    else:
-        file = request.files['file']
-        if file and allowed_file(file.filename):
-            file_name = file.filename.split('.')[0]
-            file_type = file.filename.split('.')[1]
-            if file_name == '':
-                return jsonify({'errorMessage': 'No selected file'}), 400
-            # 獲取當前時間
-            now = datetime.now()
-            # 格式化為指定格式
-            formatted_time = now.strftime("%Y-%m-%dT%H%M%S")
-            s3_file_name = f"{file_name}-{generate_random_code()}-{formatted_time}.{file_type}"
-            key = f"{RECORDINGS_PATH}{s3_file_name}"
-            try:
-                s3.upload_object(key, file)
-            except Exception as e:
-                error_message = f"Error uploading file: {str(e)}"
-                return jsonify({'errorMessage': f'Error uploading file: {str(e)}'}), 500
-        else:
-            error_message = str(e)
-            return jsonify({'errorMessage': 'File type not allowed'}), 400
-
     try:
-        user_profile_ref = db.collection("user").document(uid)
-        user_profile = user_profile_ref.get().to_dict()
-        line_id = user_profile["preferences"]["lineNotification"]["uid"]
-        line_notification_enabled = user_profile["preferences"]["lineNotification"]["enabled"]
-        if (file_type == 'mp4'):
-            with NamedTemporaryFile(suffix=".mp4") as temp_video_file:
-                s3.download_object(key, temp_video_file)
-                temp_video_file_path = temp_video_file.name  # 獲取臨時文件路徑
+        logging.basicConfig(level=logging.DEBUG, filename="C:\\Temp\\flask_debug.log")
+        logging.debug("📢 summarize() 開始執行")
 
-                # 提取影片第一幀
-                video = cv2.VideoCapture(temp_video_file_path)
+        if 'file' not in request.files and 's3_file_name' not in request.form:
+            logging.debug("❌ 沒有檔案或 S3 檔名")
+            return jsonify({"errorMessage": "No file found"}), 400
 
-                # 設置到指定的幀數
-                video.set(cv2.CAP_PROP_POS_FRAMES, 24)
+        logging.debug("✅ 成功收到檔案")
 
-                success, frame = video.read()
+        uid = request.form.get('uid')
+        key = ''
+        file_name = ''
+        file_type = ''
+        summary_id = request.form.get('summary_id', str(uuid.uuid4()))
+        s3_file_name = request.form.get('s3_file_name')
+        if s3_file_name and allowed_file(s3_file_name):
+            file_name = s3_file_name.split('.')[0]
+            file_type = s3_file_name.split('.')[1]
+            key = RECORDINGS_PATH + s3_file_name
+        else:
+            file = request.files['file']
+            if file and allowed_file(file.filename):
+                file_name = file.filename.split('.')[0]
+                file_type = file.filename.split('.')[1]
+                if file_name == '':
+                    return jsonify({'errorMessage': 'No selected file'}), 400
+                # 獲取當前時間
+                now = datetime.now()
+                # 格式化為指定格式
+                formatted_time = now.strftime("%Y-%m-%dT%H%M%S")
+                s3_file_name = f"{file_name}-{generate_random_code()}-{formatted_time}.{file_type}"
+                key = f"{RECORDINGS_PATH}{s3_file_name}"
+                try:
+                    s3.upload_object(key, file)
+                except Exception as e:
+                    error_message = f"Error uploading file: {str(e)}"
+                    if uid:
+                        send_message_to_line(uid, f"檔案上傳失敗：{error_message}")
+                    return jsonify({'errorMessage': f'Error uploading file: {str(e)}'}), 500
+            else:
+                error_message = str(e)
+                if uid:
+                    send_message_to_line(uid, f"檔案處理失敗：{error_message}")
+                return jsonify({'errorMessage': 'File type not allowed'}), 400
 
-                if success:
-                    thumbnail_name = f"{key.split('/')[-1].split('.')[0]}_thumbnail.jpg"
-                    temp_thumbnail_file_path = f"/tmp/{key.split('/')[-1].split('.')[0]}_thumbnail.jpg"
-                    cv2.imwrite(temp_thumbnail_file_path, frame)
-                    with open(temp_thumbnail_file_path, "rb") as image_file:
-                        s3.upload_object(
-                            f"{RECORDINGS_PATH}{thumbnail_name}", image_file)
+        try:
+            user_profile_ref = db.collection("user").document(uid)
+            user_profile = user_profile_ref.get().to_dict()
+            line_id = user_profile["preferences"]["lineNotification"]["uid"]
+            acitve = user_profile["preferences"]["lineNotification"]["enabled"]
+            if (file_type == 'mp4'):
+                with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_video_file:
+                    s3.download_object(key, temp_video_file)
+                    temp_video_file_path = temp_video_file.name  # 獲取臨時文件路徑
 
-                    video.release()
+                    # 提取影片第一幀
+                    video = cv2.VideoCapture(temp_video_file_path)
 
-                    # 使用 pydub 加載音頻流
-                    audio = AudioSegment.from_file(
-                        temp_video_file_path, format=file_type)
+                    # 設置到指定的幀數
+                    video.set(cv2.CAP_PROP_POS_FRAMES, 24)
 
-                    # 將音頻保存為臨時文件
-                    with NamedTemporaryFile(suffix=".mp3") as temp_audio_file:
-                        audio.export(temp_audio_file.name, format="mp3")
-                        temp_audio_file_path = temp_audio_file.name  # 獲取臨時文件路徑
-                        print(temp_audio_file_path)
-                        with open(temp_audio_file_path, "rb") as audio_file:
-                            transcription = ai.transcribe_audio(audio_file)
+                    success, frame = video.read()
 
+                    if success:
+                        thumbnail_name = f"{key.split('/')[-1].split('.')[0]}_thumbnail.jpg"
+                        temp_thumbnail_file_path = f"C:\\Temp\\{thumbnail_name}"  # 使用 Windows 兼容的路徑
+                        cv2.imwrite(temp_thumbnail_file_path, frame)
+                        with open(temp_thumbnail_file_path, "rb") as image_file:
+                            s3.upload_object(
+                                f"{RECORDINGS_PATH}{thumbnail_name}", image_file)
+
+                        video.release()
+
+                        # 使用 pydub 加載音頻流
+                        audio = AudioSegment.from_file(
+                            temp_video_file_path, format=file_type)
+
+                        # 將音頻保存為臨時文件
+                        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_audio_file:
+                            audio.export(temp_audio_file.name, format="mp3")
+                            temp_audio_file_path = temp_audio_file.name  # 獲取臨時文件路徑
+                            print(temp_audio_file_path)
+                            with open(temp_audio_file_path, "rb") as audio_file:
+                                transcription = ai.transcribe_audio(audio_file)
+
+                        # print(transcription)
+                        mapped_segments = list(map(
+                            lambda segment:
+                                {
+                                    "id": segment["id"],
+                                    "startTime": math.floor(segment["start"]),
+                                    "endTime": math.floor(segment["end"]),
+                                    "text": segment["text"]
+                                },
+                            transcription.segments))
+
+                        # 使用 getSummary 生成會議摘要
+                        summary = ai.get_summary(transcription.text)
+                        date = datetime.now(timezone.utc).isoformat()
+                        # 構建返回的 JSON 格式
+                        response = {
+                            "summary": {
+                                "id": summary_id,
+                                "date": date,
+                                "summary": summary,
+                                "transcription": {
+                                    "duration": transcription.duration,
+                                    "segments": mapped_segments  # 傳遞時間段的轉錄內容
+                                },
+                                "srcUrl": f"{request.origin}/api/openvidu/recordings/{s3_file_name}",
+                                "thumbnailUrl":  f"{request.origin}/api/openvidu/recordings/thumbnails/{thumbnail_name}",
+                            }
+                        }
+
+                        doc_ref = db.collection("user").document(
+                            uid).collection("summaries").document(summary_id)
+
+                        doc_ref.set(response["summary"])
+
+                        if line_id and acitve:
+                            send_message_to_line(line_id, response["summary"])
+                        return jsonify(response)
+                        
+                    else:
+                        video.release()
+                        return jsonify({"error": "Failed to extract frame from video"}), 500
+            else:
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_audio_file:
+                    print("下載前檔案名稱:", temp_audio_file.name)  # 檢查檔案名稱
+                    s3.download_object(key, temp_audio_file)
+                    # 確認 C:\Temp 是否有該檔案
+                    print("目前 C:\\Temp 內的檔案:", os.listdir(r"C:\Temp"))
+                    with open(temp_audio_file.name, "rb") as audio_file:
+                        transcription = ai.transcribe_audio(audio_file)
                     # print(transcription)
                     mapped_segments = list(map(
                         lambda segment:
@@ -180,6 +251,7 @@ def summarize():
 
                     # 使用 getSummary 生成會議摘要
                     summary = ai.get_summary(transcription.text)
+                    summary_id = str(uuid.uuid4())
                     date = datetime.now(timezone.utc).isoformat()
                     # 構建返回的 JSON 格式
                     response = {
@@ -192,7 +264,7 @@ def summarize():
                                 "segments": mapped_segments  # 傳遞時間段的轉錄內容
                             },
                             "srcUrl": f"{request.host_url}api/openvidu/recordings/{s3_file_name}",
-                            "thumbnailUrl":  f"{request.host_url}api/openvidu/recordings/thumbnails/{thumbnail_name}",
+                            "thumbnailUrl":  None,
                         }
                     }
 
@@ -201,61 +273,24 @@ def summarize():
 
                     doc_ref.set(response["summary"])
 
-                    if line_id and line_notification_enabled:
+                    if line_id and acitve:
                         send_message_to_line(line_id, response["summary"])
                     return jsonify(response)
-                else:
-                    video.release()
-                    return jsonify({"error": "Failed to extract frame from video"}), 500
-        else:
-            with NamedTemporaryFile(suffix=".mp3") as temp_audio_file:
-                s3.download_object(key, temp_audio_file)
-                with open(temp_audio_file.name, "rb") as audio_file:
-                    transcription = ai.transcribe_audio(audio_file)
-                # print(transcription)
-                mapped_segments = list(map(
-                    lambda segment:
-                        {
-                            "id": segment["id"],
-                            "startTime": math.floor(segment["start"]),
-                            "endTime": math.floor(segment["end"]),
-                            "text": segment["text"]
-                        },
-                    transcription.segments))
+                
 
-                # 使用 getSummary 生成會議摘要
-                summary = ai.get_summary(transcription.text)
-                summary_id = str(uuid.uuid4())
-                date = datetime.now(timezone.utc).isoformat()
-                # 構建返回的 JSON 格式
-                response = {
-                    "summary": {
-                        "id": summary_id,
-                        "date": date,
-                        "summary": summary,
-                        "transcription": {
-                            "duration": transcription.duration,
-                            "segments": mapped_segments  # 傳遞時間段的轉錄內容
-                        },
-                        "srcUrl": f"{request.host_url}api/openvidu/recordings/{s3_file_name}",
-                        "thumbnailUrl":  None,
-                    }
-                }
-
-                doc_ref = db.collection("user").document(
-                    uid).collection("summaries").document(summary_id)
-
-                doc_ref.set(response["summary"])
-
-                if line_id and line_notification_enabled:
-                    send_message_to_line(line_id, response["summary"])
-                return jsonify(response)
-
+        except Exception as e:
+            return jsonify({
+                "errorMessage": str(e)
+            }), 500
+        print(f"✅ summarize() 回傳的 response: {response}")  # 🔍 確保 Flask 真的有回傳資料
+        logging.debug(f"✅ 成功生成摘要，摘要ID: {summary_id}")
+        return jsonify(response)  # 確保成功返回 JSON
+    
     except Exception as e:
-        return jsonify({
-            "errorMessage": str(e)
-        }), 500
-
+        error_message = f"❌ 發生未處理錯誤: {str(e)}"
+        logging.error(error_message)
+        traceback.print_exc()  # 顯示完整錯誤細節
+        return jsonify({"errorMessage": error_message}), 500
 
 @api_blueprint.route('/summary/<summary_id>', methods=['DELETE'])
 def delete_summary(summary_id):
@@ -287,6 +322,11 @@ def get_chatbot_history():
         else:
             chat_history = {
                 "messages": [
+                    {
+                        "role": "system",
+                        "content": WEBSITE_CONTEXT,
+                        "date": datetime.now(timezone.utc).isoformat()
+                    },
                     {
                         "role": "assistant",
                         "content": WELCOME_CONTEXT,
@@ -331,6 +371,11 @@ def get_chatbot_message():
         else:
             chat_history_messages = [
                 {
+                    "role": "system",
+                    "content": WEBSITE_CONTEXT,
+                    "date": datetime.now(timezone.utc).isoformat()
+                },
+                {
                     "role": "assistant",
                     "content": WELCOME_CONTEXT,
                     "date": datetime.now(timezone.utc).isoformat()
@@ -355,7 +400,7 @@ def get_chatbot_message():
         }] + messages
 
         # 調用ChatGroq API
-        bot_response = ai.get_chatbot_message(str(messages))
+        bot_response = ai.get_chatbot_message(messages)
 
         # 將機器人的回應添加到歷史記錄
         bot_message = {

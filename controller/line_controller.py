@@ -2,7 +2,7 @@ import os
 from flask import Blueprint, abort, redirect, request, jsonify
 import requests
 import uuid
-
+import json
 import firebase_admin
 from firebase_admin import firestore
 
@@ -30,6 +30,9 @@ from linebot.v3.messaging import (
     URIAction,
     VideoMessage,
     AudioMessage,
+    ButtonsTemplate, 
+    TemplateMessage,
+    FlexMessage
 )
 from linebot.v3.webhooks import (
     MessageEvent,
@@ -58,63 +61,124 @@ with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
 
 # 發送 LINE 訊息的函式
-
+NGROK_URL = "https://mainly-deep-sole.ngrok-free.app"  # 更新為 ngrok 產生的 HTTPS URL
 
 def send_message_to_line(user_id, meeting_data):
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_MESSAGE_CHANEL_ACCESS_TOKEN}",
-        "X-Line-Retry-Key": str(uuid.uuid4())
-    }
-    thumbnailUrl = meeting_data["thumbnailUrl"]
-    srcUrl = meeting_data["srcUrl"]
-    summary_title = meeting_data["summary"]["title"]
-    summary_content = meeting_data["summary"]["content"]
-    messages = []
-    messages.append(
-        {
-            "type": "text",
-            "text": summary_title
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LINE_MESSAGE_CHANEL_ACCESS_TOKEN}",
+            "X-Line-Retry-Key": str(uuid.uuid4())
         }
-    )
-    if srcUrl.endswith('.mp4'):
-        messages.append(
-            {
-                "type": "video",
-                "originalContentUrl": srcUrl,
-                "previewImageUrl": thumbnailUrl,
-                # "trackingId": "track-id"
+        thumbnailUrl = meeting_data["thumbnailUrl"]
+        srcUrl = meeting_data["srcUrl"]
+        summary_title = meeting_data["summary"]["title"]
+        summary_content = meeting_data["summary"]["content"]
+
+        # ✅ 替換 srcUrl 的本機網址，改用 ngrok 的公開 HTTPS 網址
+        if srcUrl.startswith("http://127.0.0.1:6080"):
+            srcUrl = srcUrl.replace("http://127.0.0.1:6080", NGROK_URL)
+            print(f"✅ Updated srcUrl: {srcUrl}")  # 確保 URL 是 HTTPS
+
+        # if thumbnailUrl:  # 只有在 `thumbnailUrl` 存在時才替換
+        #     if thumbnailUrl.startswith("http://127.0.0.1:6080"):
+        #         thumbnailUrl = thumbnailUrl.replace("http://127.0.0.1:6080", NGROK_URL)
+        #         print(f"✅ Updated thumbnailUrl: {thumbnailUrl}")
+        # ✅ 如果 `thumbnailUrl` 無效（None、空值、127.0.0.1、localhost），改用預設圖片
+        if not thumbnailUrl or "127.0.0.1" in thumbnailUrl or "localhost" in thumbnailUrl:
+            print("⚠️ 縮圖 URL 無效，使用預設縮圖")
+            thumbnailUrl = "https://i.imgur.com/iMHSEfN.png"  # **使用你提供的預設縮圖**
+        # 🔹 **MP4 & MP3 產生 Flex Message，並讓整個訊息可點擊**
+        flex_content = {
+            "type": "bubble",
+            # "hero": {
+            #     "type": "image",
+            #     "url": thumbnailUrl,
+            #     "size": "full",
+            #     "aspectRatio": "16:9",
+            #     "aspectMode": "cover",
+            # },
+            "hero": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "image",
+                        "url": thumbnailUrl,  # ✅ 你的縮圖
+                        "size": "full",
+                        "aspectRatio": "16:9",
+                        "aspectMode": "cover"
+                    },
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "image",
+                                "url": "https://i.imgur.com/WaNVO4d.png",  # ✅ 你的「播放 Icon」
+                                "size": "40px",  # 控制 Icon 大小
+                                "aspectMode": "fit"
+                            }
+                        ],
+                        "position": "absolute",
+                        "offsetBottom": "40%",
+                        "offsetStart": "40%",
+                        "offsetEnd": "40%"
+                    }
+                ]
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": summary_title,
+                        "weight": "bold",
+                        "size": "xl",
+                        "wrap": True
+                    },
+                    {
+                        "type": "text",
+                        "text": summary_content,
+                        "size": "sm",
+                        "wrap": True,
+                        "margin": "md"
+                    }
+                ]
+            },
+            # ✅ 讓整個訊息可點擊
+            "action": {
+                "type": "uri",
+                "uri": srcUrl
             }
-        )
-    else:
-        duration = int(
-            float(meeting_data["transcription"]["duration"])*1000)
-        messages.append(
-            {
-                "type": "audio",
-                "originalContentUrl": srcUrl,
-                "duration": duration,
-                        # "trackingId": "track-id"
-            }
-        )
-    messages.append({
-        "type": "text",
-        "text": summary_content,
-    })
-    payload = {
-        "to": user_id,  # ✅ 這裡用測試用的 ID
-        "messages": messages
-    }
+        }
 
-    # 🔍 記錄發送資訊
-    print(f"🔹 Sending LINE message to: {user_id} | Message: {messages}")
+        # ✅ 修正 FlexMessage 物件創建方式
+        flex_message = {
+            "type": "flex",
+            "altText": "📺 點擊觀看會議影片" if srcUrl.endswith('.mp4') else "🎵 點擊播放會議音檔",
+            "contents": flex_content
+        }
 
-    response = requests.post(LINE_MESSAGE_PUSH_URL,
-                             json=payload, headers=headers)
+        payload = {
+                "to": user_id,
+                "messages": [flex_message]  # **直接傳 JSON，不需要 `model_dump_json()`**
+        }
 
-    # 🔍 記錄 API 回應
-    print(f"🔍 LINE API Response: {response.status_code} | {response.text}")
+        # 🔍 記錄發送資訊
+        print(f"🔹 Sending LINE message to: {user_id} | Message: {json.dumps(payload, indent=2)}")
 
+        response = requests.post(LINE_MESSAGE_PUSH_URL, json=payload, headers=headers)
+
+        # 🔍 記錄 API 回應
+        print(f"🔍 LINE API Response: {response.status_code} | {response.text}")
+        print(f"🔍 Checking srcUrl: {srcUrl}")
+        print(f"🔍 Checking thumbnailUrl: {thumbnailUrl}")
+    
+    except Exception as e:
+        print(f"❌ 發送 LINE 訊息時發生錯誤: {str(e)}")
+    
 
 @line_blueprint.route('/login', methods=['GET'])
 def login():
@@ -177,11 +241,17 @@ def login_callback():
 
 @line_blueprint.route("/message/callback", methods=['POST'])
 def message_callback():
+    print("📩 LINE Webhook 觸發了!")
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
+    print(f"📩 收到 Webhook 事件: {body}")  # 確認 LINE 有送 Webhook
+    if not signature:
+        print("❌ 沒有 X-Line-Signature，可能不是 LINE 發送的")
+        abort(400)
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        print("❌ Webhook 驗證失敗")
         abort(400)
     return 'OK'
 
@@ -189,8 +259,9 @@ def message_callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     mtext = event.message.text
-    print(mtext)
-    if mtext == '會議清單':
+    print(f"🔹 收到使用者訊息: {mtext}")  # 確認有收到訊息
+    if mtext == "會議清單":
+        print("✅ 執行 send_meeting_list 函式")  # 確認 `send_meeting_list` 有執行
         send_meeting_list(event)
 
 
@@ -208,16 +279,18 @@ def send_meeting_list(event):
     # 從Firestore獲取對話歷史
     # 查詢 preferences.lineNotification.uid 等於 target_uid 的文件
     collection_ref = db.collection('your_collection_name')  # 替換為你的集合名稱
-    query = collection_ref.where('preferences.lineNotification.uid', '==', )
+    # query = collection_ref.where('preferences.lineNotification.uid', '==', )
 
-    # 查詢並輸出結果
-    results = query.stream()
+    # # 查詢並輸出結果
+    # results = query.stream()
 
-    for doc in results:
-        print(f'Document ID: {doc.id}')
-        print(f'Document Data: {doc.to_dict()}')
+    # for doc in results:
+    #     print(f'Document ID: {doc.id}')
+    #     print(f'Document Data: {doc.to_dict()}')
+    
+    
     meetingsRef = db.collection("user").document(
-        "8zAech6MQUenjt6gSnNz8yhTk312").collection("summaries")
+        "QazuaKKg08gGXP37XDvUtsF0pbv1").collection("summaries")
     meetings = meetingsRef.get()
 
     carouselColumns = []
@@ -272,7 +345,7 @@ def send_meeting_list(event):
 
 def send_meeting_data(event, meeting_id):
     meetingRef = db.collection("user").document(
-        "8zAech6MQUenjt6gSnNz8yhTk312").collection("summaries").document(meeting_id)
+        "QazuaKKg08gGXP37XDvUtsF0pbv1").collection("summaries").document(meeting_id)
     meeting = meetingRef.get()
     meeting_data = meeting.to_dict()
     try:
@@ -280,32 +353,96 @@ def send_meeting_data(event, meeting_id):
         srcUrl = meeting_data["srcUrl"]
         summary_title = meeting_data["summary"]["title"]
         summary_content = meeting_data["summary"]["content"]
-        messages = []
-        messages.append(TextMessage(text=summary_title))
-        if srcUrl.endswith('.mp4'):
-            messages.append(
-                VideoMessage(
-                    previewImageUrl=thumbnailUrl,
-                    originalContentUrl=srcUrl,
-                )
-            )
-        else:
-            duration = int(
-                float(meeting_data["transcription"]["duration"])*1000)
-            messages.append(
-                AudioMessage(
-                    originalContentUrl=srcUrl,
-                    duration=duration,
-                )
-            )
-        messages.append(TextMessage(text=summary_content))
-        # line_bot_api.reply_message(event.reply_token,message)
-        line_bot_api.reply_message_with_http_info(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=messages
-            )
+
+        # ✅ 替換 srcUrl 的本機網址，改用 ngrok 的公開 HTTPS 網址
+        if srcUrl.startswith("http://127.0.0.1:6080"):
+            srcUrl = srcUrl.replace("http://127.0.0.1:6080", NGROK_URL)
+            print(f"✅ Updated srcUrl: {srcUrl}")  # 確保 URL 是 HTTPS
+        if not thumbnailUrl or "127.0.0.1" in thumbnailUrl or "localhost" in thumbnailUrl:
+            print("⚠️ 縮圖 URL 無效，使用預設縮圖")
+            thumbnailUrl = "https://i.imgur.com/iMHSEfN.png"  # **使用你提供的預設縮圖**
+        
+        # ✅ 確保 `altText` 不是空的
+        alt_text = "📺 點擊觀看會議影片" if srcUrl.endswith('.mp4') else "🎵 點擊播放會議音檔"
+        # ✅ 產生與摘要通知相同的 `Flex Message`
+        flex_content = {
+            "type": "bubble",
+            "hero": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "image",
+                        "url": thumbnailUrl,  # ✅ 你的縮圖
+                        "size": "full",
+                        "aspectRatio": "16:9",
+                        "aspectMode": "cover"
+                    },
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "image",
+                                "url": "https://i.imgur.com/WaNVO4d.png",  # ✅ 你的「播放 Icon」
+                                "size": "40px",  # 控制 Icon 大小
+                                "aspectMode": "fit"
+                            }
+                        ],
+                        "position": "absolute",
+                        "offsetBottom": "40%",
+                        "offsetStart": "40%",
+                        "offsetEnd": "40%"
+                    }
+                ]
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": summary_title,
+                        "weight": "bold",
+                        "size": "xl",
+                        "wrap": True
+                    },
+                    {
+                        "type": "text",
+                        "text": summary_content,
+                        "size": "sm",
+                        "wrap": True,
+                        "margin": "md"
+                    }
+                ]
+            },
+            # ✅ 讓整個訊息可點擊
+            "action": {
+                "type": "uri",
+                "uri": srcUrl
+            }
+        }
+
+        flex_message = {
+            "type": "flex",
+            "altText": alt_text,  # 🔥 確保 `altText` 存在
+            "contents": flex_content
+        }
+        # ✅ 發送 `Flex Message`
+        response = requests.post(
+            LINE_MESSAGE_PUSH_URL,
+            json={
+                "to": event.source.user_id,
+                "messages": [flex_message]
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {LINE_MESSAGE_CHANEL_ACCESS_TOKEN}"
+            }
         )
+
+        print(f"✅ 發送 `send_meeting_data` 成功: {response.status_code} | {response.text}")
+        
     except:
         line_bot_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,

@@ -67,9 +67,11 @@ def index():
 
 if __name__ == "__main__":
     SERVER_PORT = os.environ.get("SERVER_PORT", 6080)
+    print(f"🚀 Flask 正在監聽 Port: {SERVER_PORT}")
     # if args.env == 'local':
     #     app.run(debug=True, port=SERVER_PORT)
     # else:
     #     app.run(debug=False, host="0.0.0.0", port=SERVER_PORT, ssl_context=('cert.pem', 'key.pem'))
-    # app.run(debug=True, port=SERVER_PORT, host="0.0.0.0")
-    app.run(debug=False, host="0.0.0.0", port=SERVER_PORT, ssl_context=('server.crt','server.key'))
+    app.run(debug=True, port=SERVER_PORT, host="0.0.0.0")
+
+    # app.run(debug=False, host="0.0.0.0", port=SERVER_PORT, ssl_context=('server.crt','server.key'))
