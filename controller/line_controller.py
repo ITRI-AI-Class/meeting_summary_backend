@@ -1,3 +1,4 @@
+import json
 import os
 from flask import Blueprint, abort, redirect, request, jsonify
 import requests
@@ -37,6 +38,7 @@ from linebot.v3.webhooks import (
     PostbackEvent,
     PostbackContent,
 )
+import urllib
 
 # 🔹 只取得 `db`，但不重新初始化 Firebase
 db = firestore.client()
@@ -64,53 +66,110 @@ def send_message_to_line(user_id, meeting_data):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_MESSAGE_CHANEL_ACCESS_TOKEN}",
-        "X-Line-Retry-Key": str(uuid.uuid4())
+        "X-Line-Retry-Key": str(uuid.uuid4()),
+        "Content-Disposition": "attachment; filename*=utf-8''",
+        'Access-Control-Expose-Headers': 'Content-Disposition',
     }
     thumbnailUrl = meeting_data["thumbnailUrl"]
     srcUrl = meeting_data["srcUrl"]
     summary_title = meeting_data["summary"]["title"]
     summary_content = meeting_data["summary"]["content"]
-    messages = []
-    messages.append(
-        {
-            "type": "text",
-            "text": summary_title
+    encoded_thumbnailUrl = urllib.parse.quote(thumbnailUrl, safe=":/")
+    encoded_srcUrl = urllib.parse.quote(srcUrl, safe=":/")
+    # 🔹 **MP4 & MP3 產生 Flex Message，並讓整個訊息可點擊**
+    flex_content = {
+        "type": "bubble",
+        # "hero": {
+        #     "type": "image",
+        #     "url": thumbnailUrl,
+        #     "size": "full",
+        #     "aspectRatio": "16:9",
+        #     "aspectMode": "cover",
+        # },
+        "hero": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "image",
+                        "url": encoded_thumbnailUrl,  # ✅ 你的縮圖
+                        "size": "full",
+                        "aspectRatio": "16:9",
+                        "aspectMode": "cover"
+                    },
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [],
+                        "position": "absolute",
+                        "backgroundColor": "#00000040",  # 半透明黑色 (25% 透明度)
+                        "width": "100%",
+                        "height": "100%"
+                    },
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "image",
+                                "url": "https://i.imgur.com/KeQDPsN.png",  # ✅ 你的「播放 Icon」
+                                "size": "40px",  # 控制 Icon 大小
+                                "aspectMode": "fit"
+                            }
+                        ],
+                        "position": "absolute",
+                        "offsetBottom": "40%",
+                        "offsetStart": "40%",
+                        "offsetEnd": "40%"
+                    }
+                ]
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": summary_title,
+                    "weight": "bold",
+                    "size": "xl",
+                    "wrap": True,
+                },
+                {
+                    "type": "text",
+                    "text": summary_content,
+                    "size": "sm",
+                    "wrap": True,
+                    "margin": "md",
+                },
+            ]
+        },
+        # ✅ 讓整個訊息可點擊
+        "action": {
+            "type": "uri",
+            "uri": encoded_srcUrl
         }
-    )
-    if srcUrl.endswith('.mp4'):
-        messages.append(
-            {
-                "type": "video",
-                "originalContentUrl": srcUrl,
-                "previewImageUrl": thumbnailUrl,
-                # "trackingId": "track-id"
-            }
-        )
-    else:
-        duration = int(
-            float(meeting_data["transcription"]["duration"])*1000)
-        messages.append(
-            {
-                "type": "audio",
-                "originalContentUrl": srcUrl,
-                "duration": duration,
-                        # "trackingId": "track-id"
-            }
-        )
-    messages.append({
-        "type": "text",
-        "text": summary_content,
-    })
+    }
+
+    # ✅ 修正 FlexMessage 物件創建方式
+    flex_message = {
+        "type": "flex",
+        "altText": "📺 點擊觀看會議影片" if srcUrl.endswith('.mp4') else "🎵 點擊播放會議音檔",
+        "contents": flex_content
+    }
+
     payload = {
-        "to": user_id,  # ✅ 這裡用測試用的 ID
-        "messages": messages
+        "to": user_id,
+        # **直接傳 JSON，不需要 `model_dump_json()`**
+        "messages": [flex_message]
     }
 
     # 🔍 記錄發送資訊
-    print(f"🔹 Sending LINE message to: {user_id} | Message: {messages}")
+    print(
+        f"🔹 Sending LINE message to: {user_id} | Message: {json.dumps(payload, indent=2)}")
 
-    response = requests.post(LINE_MESSAGE_PUSH_URL,
-                             json=payload, headers=headers)
+    response = requests.post(
+        LINE_MESSAGE_PUSH_URL, json=payload, headers=headers)
 
     # 🔍 記錄 API 回應
     print(f"🔍 LINE API Response: {response.status_code} | {response.text}")
@@ -281,32 +340,98 @@ def send_meeting_data(event, meeting_id):
         srcUrl = meeting_data["srcUrl"]
         summary_title = meeting_data["summary"]["title"]
         summary_content = meeting_data["summary"]["content"]
-        messages = []
-        messages.append(TextMessage(text=summary_title))
-        if srcUrl.endswith('.mp4'):
-            messages.append(
-                VideoMessage(
-                    previewImageUrl=thumbnailUrl,
-                    originalContentUrl=srcUrl,
-                )
-            )
-        else:
-            duration = int(
-                float(meeting_data["transcription"]["duration"])*1000)
-            messages.append(
-                AudioMessage(
-                    originalContentUrl=srcUrl,
-                    duration=duration,
-                )
-            )
-        messages.append(TextMessage(text=summary_content))
-        # line_bot_api.reply_message(event.reply_token,message)
-        line_bot_api.reply_message_with_http_info(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=messages
-            )
+        encoded_thumbnailUrl = urllib.parse.quote(thumbnailUrl, safe=":/")
+        encoded_srcUrl = urllib.parse.quote(srcUrl, safe=":/")
+        # ✅ 確保 `altText` 不是空的
+        alt_text = "📺 點擊觀看會議影片" if srcUrl.endswith('.mp4') else "🎵 點擊播放會議音檔"
+        # ✅ 產生與摘要通知相同的 `Flex Message`
+        flex_content = {
+            "type": "bubble",
+            "hero": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "image",
+                        "url": encoded_thumbnailUrl,  # ✅ 你的縮圖
+                        "size": "full",
+                        "aspectRatio": "16:9",
+                        "aspectMode": "cover"
+                    },
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [],
+                        "position": "absolute",
+                        "backgroundColor": "#00000040",  # 半透明黑色 (25% 透明度)
+                        "width": "100%",
+                        "height": "100%"
+                    },
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "image",
+                                "url": "https://i.imgur.com/KeQDPsN.png",  # ✅ 你的「播放 Icon」
+                                "size": "40px",  # 控制 Icon 大小
+                                "aspectMode": "fit"
+                            }
+                        ],
+                        "position": "absolute",
+                        "offsetBottom": "40%",
+                        "offsetStart": "40%",
+                        "offsetEnd": "40%"
+                    }
+                ]
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": summary_title,
+                        "weight": "bold",
+                        "size": "xl",
+                        "wrap": True
+                    },
+                    {
+                        "type": "text",
+                        "text": summary_content,
+                        "size": "sm",
+                        "wrap": True,
+                        "margin": "md"
+                    }
+                ]
+            },
+            # ✅ 讓整個訊息可點擊
+            "action": {
+                "type": "uri",
+                "uri": encoded_srcUrl
+            }
+        }
+
+        flex_message = {
+            "type": "flex",
+            "altText": alt_text,  # 🔥 確保 `altText` 存在
+            "contents": flex_content
+        }
+        # ✅ 發送 `Flex Message`
+        response = requests.post(
+            LINE_MESSAGE_PUSH_URL,
+            json={
+                "to": event.source.user_id,
+                "messages": [flex_message]
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {LINE_MESSAGE_CHANEL_ACCESS_TOKEN}"
+            }
         )
+
+        print(
+            f"✅ 發送 `send_meeting_data` 成功: {response.status_code} | {response.text}")
     except:
         line_bot_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,

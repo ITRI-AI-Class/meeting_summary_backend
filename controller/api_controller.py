@@ -196,8 +196,8 @@ def summarize():
                                 "duration": transcription.duration,
                                 "segments": mapped_segments  # 傳遞時間段的轉錄內容
                             },
-                            "srcUrl": f"{request.host_url}api/openvidu/recordings/{s3_file_name}",
-                            "thumbnailUrl":  f"{request.host_url}api/openvidu/recordings/thumbnails/{thumbnail_name}",
+                            "srcUrl": f"{request.origin}/api/openvidu/recordings/{s3_file_name}",
+                            "thumbnailUrl":  f"{request.origin}/api/openvidu/recordings/thumbnails/{thumbnail_name}",
                         }
                     }
 
@@ -241,8 +241,8 @@ def summarize():
                             "duration": transcription.duration,
                             "segments": mapped_segments  # 傳遞時間段的轉錄內容
                         },
-                        "srcUrl": f"{request.host_url}api/openvidu/recordings/{s3_file_name}",
-                        "thumbnailUrl":  f"{request.host_url}api/openvidu/recordings/default.png",
+                        "srcUrl": f"{request.origin}/api/openvidu/recordings/{s3_file_name}",
+                        "thumbnailUrl":  f"{request.origin}/api/openvidu/recordings/thumbnails/default.png",
                     }
                 }
 
